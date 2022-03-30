@@ -24,16 +24,18 @@ from .exceptions import (
     DocumentNotFound,
     ApiError,)
 from .const import (RFC3339Nano,
+                    DEFAULT_TOKEN_SERVER_URL,
+                    DEFAULT_SERVICE_MGR_SERVER_URL,
                     USER_AGENT,
-                    DEVICE_TOKEN_URL,
-                    USER_TOKEN_URL,
+                    DEVICE_TOKEN_PATH,
+                    USER_TOKEN_PATH,
                     USER_TOKEN_VALIDITY,
                     DEVICE_REGISTER_URL,
                     DEVICE,
                     NBYTES,
                     FILE_LIST_VALIDITY,
                     ROOT_ID,
-                    SERVICE_MGR_URL,
+                    SERVICE_MGR_PATH,
                     TRASH_ID,
                     FileType)
 
@@ -115,13 +117,15 @@ class Client:
 
         log.debug("Got 401 code; trying to renew token")
         await self.renew_token()
-        return await self.request(method, path, data, body, headers, params, stream, False)
+
+        #return await self.request(method, path, data, body, headers, params, stream, False)
 
     async def base_url(self):
         if self._base_url is None:
-            resp = await self.request("GET", SERVICE_MGR_URL)
+            resp = await self.request("GET", self.config['service_mgr_url'])
             try:
                 self._base_url = resp.json().get("Host")
+                #self._base_url = 'rmfakecloud.bruckbu.de'
             except json.decoder.JSONDecodeError:
                 raise ApiError("Failed to get service URL", resp)
         return self._base_url
@@ -150,14 +154,41 @@ class Client:
             "deviceID": uuid,
 
         }
-        response = await self.request("POST", DEVICE_TOKEN_URL, body=body, allow_renew=False)
+        response = await self.request("POST", self.config['device_token_url'], body=body, allow_renew=False)
         if response.status_code == 200:
             self.config["devicetoken"] = response.text
             return True
         else:
             raise AuthError(f"Could not register device (status code {response.status_code})")
 
+    async def prompt_set_server_url(self):
+        if self.config.get('device_token_url'):
+            return
+
+        print(f"""
+        Please state the adress (including https://) of your remarkable cloud:
+        (default: https://webapp-production-dot-remarkable-production.appspot.com for the official reMarkable™ Connect™ cloud™ powered by Google™ blobstorage™.)
+        """)
+        server_url = input("\nPlease enter cloud storage url (including https://) or leave empty for official cloud: ")
+        if server_url == "":
+            token_server_url = DEFAULT_TOKEN_SERVER_URL
+            service_mgr_server_url = DEFAULT_SERVICE_MGR_SERVER_URL
+            device_register_url = DEVICE_REGISTER_URL
+        else:
+            token_server_url = server_url
+            service_mgr_server_url = server_url
+            device_register_url = server_url + '/generatecode'
+            
+        self.config['device_token_url'] = token_server_url + DEVICE_TOKEN_PATH
+        self.config['user_token_url'] = token_server_url + USER_TOKEN_PATH
+        self.config['service_mgr_url'] = service_mgr_server_url + SERVICE_MGR_PATH
+        self.config['device_register_url'] = device_register_url
+
+
     async def prompt_register_device(self):
+        if 'device_token_url' not in self.config.keys():
+            await self.prompt_set_server_url()
+
         if self.config.get("devicetoken"):
             return
 
@@ -167,7 +198,7 @@ class Client:
         print(textwrap.dedent(f"""
             This reMarkable client needs to be registered with the reMarkable
             cloud. To do this, please visit
-                {DEVICE_REGISTER_URL}
+                {self.config['device_register_url']}
             to get a one-time code.
 
             (You may be prompted to log into your reMarkable cloud account. If
@@ -196,7 +227,7 @@ class Client:
         if not self.config.get("devicetoken"):
             raise AuthError("Please register a device first")
         headers = {"Authorization": f'Bearer {self.config["devicetoken"]}'}
-        response = await self.request("POST", USER_TOKEN_URL,
+        response = await self.request("POST", self.config['user_token_url'],
                                       headers=headers, allow_renew=False)
         if response.status_code < 400:
             self.config.update({
